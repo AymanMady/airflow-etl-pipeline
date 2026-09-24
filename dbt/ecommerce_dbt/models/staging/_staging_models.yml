@@ -1,0 +1,111 @@
+# =============================================================================
+#  Tests and documentation of the staging layer
+# =============================================================================
+#  A dbt test fails when its query returns at least one row.
+#
+#  SEVERITY is set per test, and that distinction is the heart of a good
+#  quality strategy:
+#
+#    error  (default)  stops the pipeline. Reserved for rules whose violation
+#                      makes the numbers WRONG.
+#    warn              logs without blocking. For anomalies to watch that do
+#                      not compromise the results.
+#
+#  Making everything `error` leads to a permanently red pipeline that nobody
+#  looks at any more. Making everything `warn` lets wrong numbers through. The
+#  call is made rule by rule.
+# =============================================================================
+
+version: 2
+
+models:
+  - name: stg_customers
+    description: Customers prepared for analysis.
+    columns:
+      - name: customer_id
+        description: Primary key.
+        data_tests:
+          - unique
+          - not_null
+      - name: email
+        description: Normalised email, NULL when the source was invalid.
+        data_tests:
+          # Default severity (error): if an invalid email makes it this far,
+          # the Python transformation has a bug.
+          - valid_email
+      - name: signup_date
+        data_tests:
+          - not_null
+
+  - name: stg_products
+    description: The product catalogue prepared for analysis.
+    columns:
+      - name: product_id
+        description: Primary key.
+        data_tests:
+          - unique
+          - not_null
+      - name: price
+        description: Unit price, never negative.
+        data_tests:
+          - not_null
+          - non_negative_values
+      - name: price_segment
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['budget', 'standard', 'premium']
+
+  - name: stg_orders
+    description: Orders prepared for analysis.
+    columns:
+      - name: order_id
+        description: Primary key.
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Reference to stg_customers.
+        data_tests:
+          - not_null
+          # --- REFERENTIAL INTEGRITY ---
+          #  Detects orders pointing at a non-existent customer.
+          #  Deliberately a `warn`: those orphans come from the upstream system
+          #  and the pipeline can do nothing about them. Reporting them is
+          #  enough; blocking the whole load over 1% of the rows would be
+          #  disproportionate. The `error_if` threshold turns the warning into
+          #  a failure if the phenomenon worsens - beyond that point it is no
+          #  longer noise, it is a breakdown of the source system.
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+              config:
+                severity: error
+                warn_if: ">0"
+                error_if: ">500"
+
+      - name: product_id
+        description: Reference to stg_products.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: product_id
+              config:
+                severity: error
+                warn_if: ">0"
+                error_if: ">500"
+      - name: quantity
+        description: Quantity ordered, strictly positive.
+        data_tests:
+          - not_null
+          - positive_values
+      - name: status
+        description: Order status, drawn from a closed reference list.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['pending', 'paid', 'shipped', 'delivered', 'cancelled', 'returned']

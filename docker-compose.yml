@@ -1,0 +1,353 @@
+# =============================================================================
+#  ecommerce-etl - local infrastructure
+# =============================================================================
+#  PHASE 1: two PostgreSQL databases + an optional SQL client.
+#  The Airflow services (api-server, scheduler, dag-processor, triggerer) are
+#  added in PHASE 5, in this same file.
+#
+#  Start:  make up        (or: docker compose up -d)
+#  Stop :  make down
+# =============================================================================
+
+# Compose project name: prefixes the containers, volumes and networks.
+# Without it, Docker would use the folder name ("airflow-etl-pipeline").
+name: ecommerce-etl
+
+# -----------------------------------------------------------------------------
+#  Reusable block (YAML anchor): the PostgreSQL health probe
+# -----------------------------------------------------------------------------
+#  A HEALTHCHECK tells Docker whether the container is genuinely READY, not
+#  merely started. A crucial distinction: PostgreSQL takes a few seconds to
+#  accept connections after the process launches. Without a probe, Airflow
+#  would try to connect to a database that is not open yet and crash.
+#
+#  The $$ is a Compose escape: it writes a literal $ into the command, so the
+#  variable is resolved INSIDE the container and not by Compose.
+x-pg-healthcheck: &pg-healthcheck
+  test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -q"]
+  interval: 10s      # how often the probe runs
+  timeout: 5s        # beyond this, the probe counts as failed
+  retries: 5         # 5 consecutive failures => container "unhealthy"
+  start_period: 10s  # grace period at startup, failures there do not count
+
+# -----------------------------------------------------------------------------
+#  Reusable block: configuration shared by every Airflow service
+# -----------------------------------------------------------------------------
+#  Airflow 3 is not a single program but FOUR specialised processes. They share
+#  the same image, the same code and the same metadata database, hence this
+#  factored-out block.
+#
+#    api-server     serves the web UI and the REST API
+#    scheduler      decides which tasks must run, and when
+#    dag-processor  reads the Python files in dags/ and extracts the DAGs
+#    triggerer      handles asynchronously waiting tasks (deferrable tasks)
+#
+#  This separation is new in Airflow 3: in 2.x the scheduler parsed the DAGs
+#  itself. Isolating the parsing stops a slow or faulty DAG file from slowing
+#  down the scheduling of everything else.
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: docker/airflow/Dockerfile
+  image: ecommerce-etl/airflow:3.3.2
+  env_file: [.env]
+  environment: &airflow-env
+    # --- EXECUTOR: what actually runs the tasks? ---
+    #  LocalExecutor starts each task in a subprocess on the machine. Enough
+    #  here, and far simpler than CeleryExecutor, which would require Redis
+    #  plus workers. The other options: SequentialExecutor (one task at a
+    #  time, unusable), KubernetesExecutor (one pod per task).
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+    # --- Connection to the metadata database ---
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+      postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@postgres-airflow:5432/${AIRFLOW_DB_NAME}
+
+    # --- Security ---
+    #  The Fernet key encrypts the Connection passwords in the database.
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+
+    # --- Internal communication (new in Airflow 3) ---
+    #  Tasks no longer touch the metadata database directly: they go through
+    #  the execution API. User code is thereby isolated from the database,
+    #  which closes a real Airflow 2 security hole.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+
+    # --- Behaviour ---
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'   # a new DAG does not start by itself
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'                # no example DAGs
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: UTC
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    PYTHONPATH: /opt/airflow                             # makes `src` importable
+
+    # --- Warehouse access, read by src/utils/config.py ---
+    POSTGRES_HOST: ${POSTGRES_HOST}
+    POSTGRES_PORT: ${POSTGRES_PORT}
+    POSTGRES_DB: ${POSTGRES_DB}
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+  volumes:
+    # Code and data mounted from the host: editing a file shows up in Airflow
+    # immediately, with no image rebuild.
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./config:/opt/airflow/config
+    - ./plugins:/opt/airflow/plugins
+    - ./src:/opt/airflow/src
+    - ./data:/opt/airflow/data
+    - ./dbt:/opt/airflow/dbt
+    - ./scripts:/opt/airflow/scripts
+    - ./tests:/opt/airflow/tests
+    - ./pyproject.toml:/opt/airflow/pyproject.toml
+
+  # Runs the containers under YOUR Unix id. Without this, the files written
+  # into ./logs would belong to root and you could no longer delete them
+  # without sudo.
+  user: "${AIRFLOW_UID:-50000}:0"
+  networks: [ecommerce-net]
+
+  depends_on: &airflow-depends
+    postgres-airflow:
+      condition: service_healthy
+    postgres-warehouse:
+      condition: service_healthy
+
+
+services:
+
+  # ===========================================================================
+  #  1. WAREHOUSE - the e-commerce business data
+  # ===========================================================================
+  #  This is the database the pipeline fills (raw) and dbt transforms (staging,
+  #  analytics). It is the one an analyst would query.
+  postgres-warehouse:
+    image: postgres:16.15-alpine
+    container_name: ecom_postgres_warehouse
+    restart: unless-stopped
+    environment:
+      # These 3 variables are read by the official postgres image on first
+      # start, to create the database and the superuser.
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      # "port_on_your_machine:port_in_the_container"
+      # 5435 locally because 5432/5433/5434/5440 are already taken by the other
+      # projects. Inside the Docker network it is always 5432.
+      - "${WAREHOUSE_HOST_PORT:-5435}:5432"
+    volumes:
+      # Named volume: the data survives `docker compose down`.
+      # Without it, every restart would begin from an empty database.
+      - pg_warehouse_data:/var/lib/postgresql/data
+      # Init scripts, played ONCE on a pristine volume.
+      # :ro = mounted read-only, the container cannot modify them.
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck: *pg-healthcheck
+    networks:
+      - ecommerce-net
+
+  # ===========================================================================
+  #  2. METADATA DB - Airflow's internal memory
+  # ===========================================================================
+  #  Airflow writes the state of EVERY run there: dag runs, task instances,
+  #  attempts, durations, XComs, connections, users.
+  #
+  #  Why a database SEPARATE from the warehouse?
+  #    - Failure isolation: saturating the warehouse must not stop the
+  #      orchestrator from working and reporting the incident.
+  #    - Security: an analyst reading the warehouse has no business seeing the
+  #      passwords stored in the Airflow connections.
+  #    - Lifecycle: you can wipe or recreate one without touching the other.
+  #    - Load: Airflow writes continuously (scheduler heartbeats), the
+  #      warehouse does large analytical scans. Incompatible profiles.
+  postgres-airflow:
+    image: postgres:16.15-alpine
+    container_name: ecom_postgres_airflow
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${AIRFLOW_DB_NAME}
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+    volumes:
+      - pg_airflow_data:/var/lib/postgresql/data
+    # No `ports:` here, and that is DELIBERATE. This database is used only by
+    # the Airflow containers, on the internal network. Not exposing it shrinks
+    # the attack surface: nothing from your machine or the outside network can
+    # reach it.
+    healthcheck: *pg-healthcheck
+    networks:
+      - ecommerce-net
+
+  # ===========================================================================
+  #  3. ADMINER - web SQL client (optional)
+  # ===========================================================================
+  #  Started only on request:  make tools   (--profile tools)
+  #  A `profile` lets you ship convenience tools without forcing them into the
+  #  project's normal startup.
+  adminer:
+    image: adminer:5
+    container_name: ecom_adminer
+    restart: unless-stopped
+    profiles: ["tools"]
+    ports:
+      - "${ADMINER_PORT:-8083}:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres-warehouse
+    depends_on:
+      postgres-warehouse:
+        condition: service_healthy
+    networks:
+      - ecommerce-net
+
+
+  # ===========================================================================
+  #  4. AIRFLOW - initialisation (runs once, then stops)
+  # ===========================================================================
+  #  Prepares the metadata database: creates Airflow's ~40 internal tables,
+  #  then the administrator account. Every other service waits for this
+  #  container to have finished SUCCESSFULLY.
+  airflow-init:
+    <<: *airflow-common
+    container_name: ecom_airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        echo "[INIT] Migrating the metadata database..."
+        exec /entrypoint airflow version
+    environment:
+      <<: *airflow-env
+      # Variables understood by the official image's entrypoint:
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+    restart: on-failure
+
+  # ===========================================================================
+  #  5. API SERVER - web UI + REST API
+  # ===========================================================================
+  airflow-apiserver:
+    <<: *airflow-common
+    container_name: ecom_airflow_apiserver
+    command: api-server
+    ports:
+      - "${AIRFLOW_WEB_PORT:-8089}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ===========================================================================
+  #  6. SCHEDULER - the heart of the orchestration
+  # ===========================================================================
+  #  Loops continuously and answers one question: "which task instance can move
+  #  to running right now?" It checks that the scheduled time has been reached,
+  #  that the upstream tasks succeeded, and that the concurrency limits are
+  #  respected. This is what makes Airflow an orchestrator rather than a plain
+  #  cron.
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: ecom_airflow_scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ===========================================================================
+  #  7. DAG PROCESSOR - reading the DAG files
+  # ===========================================================================
+  #  Periodically re-reads the Python files in dags/ and records the structure
+  #  of the DAGs it finds in the database. That is why a new DAG takes a few
+  #  tens of seconds to show up in the UI.
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: ecom_airflow_dag_processor
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ===========================================================================
+  #  8. TRIGGERER - asynchronously waiting tasks
+  # ===========================================================================
+  #  Handles "deferrable tasks": a task waiting on an external event (a file
+  #  dropped, a job finished) releases its execution slot and hands the waiting
+  #  over to the triggerer. Unused in this project, but required by a complete
+  #  Airflow 3 installation.
+  airflow-triggerer:
+    <<: *airflow-common
+    container_name: ecom_airflow_triggerer
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ===========================================================================
+  #  9. CLI - a throwaway container for one-off commands
+  # ===========================================================================
+  #  Usage:  docker compose run --rm airflow-cli airflow dags list
+  #  The `debug` profile keeps it from starting with the other services.
+  airflow-cli:
+    <<: *airflow-common
+    container_name: ecom_airflow_cli
+    profiles: ["debug"]
+    command: version
+
+# -----------------------------------------------------------------------------
+#  Volumes: the persistent storage
+# -----------------------------------------------------------------------------
+#  A container is disposable; its filesystem disappears with it.
+#  A named volume lives outside the container: it survives down/up and image
+#  version changes. `docker compose down -v` deletes it.
+volumes:
+  pg_warehouse_data:
+    name: ecommerce-etl_pg_warehouse_data
+  pg_airflow_data:
+    name: ecommerce-etl_pg_airflow_data
+
+# -----------------------------------------------------------------------------
+#  Network: the internal DNS
+# -----------------------------------------------------------------------------
+#  Every service on this network reaches the others by their SERVICE NAME.
+#  Docker provides a built-in DNS resolver: "postgres-warehouse" becomes the
+#  container's IP. That is why POSTGRES_HOST=postgres-warehouse works from
+#  Airflow, with no hardcoded IP address anywhere.
+networks:
+  ecommerce-net:
+    name: ecommerce-net
+    driver: bridge

@@ -1,0 +1,20 @@
+# =============================================================================
+#  Runtime dependencies of the ETL pipeline
+# =============================================================================
+#  These packages are used by the code in src/ (extract, transform, load).
+#  They are installed into the custom Airflow image in PHASE 5, and into your
+#  local venv for development and for running the tests.
+#
+#  Versions are bounded (>=x,<y): loose enough to pick up security fixes,
+#  strict enough that a major release cannot break the pipeline unannounced.
+# =============================================================================
+
+pandas>=2.2,<3.0            # handling the CSVs and the DataFrames
+psycopg2-binary>=2.9,<3.0   # PostgreSQL driver
+SQLAlchemy>=2.0,<3.0        # connection abstraction, used by pandas
+python-dotenv>=1.0,<2.0     # reading the .env file in local development
+pyarrow>=17.0               # Parquet engine: the exchange format between Airflow
+                            # tasks. Unlike CSV, Parquet keeps the TYPES
+                            # (Int64, datetime64): no re-parsing between steps.
+
+# dbt arrives in PHASE 7, Airflow comes with the Docker image (PHASE 5).

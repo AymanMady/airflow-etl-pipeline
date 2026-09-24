@@ -1,0 +1,56 @@
+# =============================================================================
+#  dbt project - analytical modelling of the e-commerce warehouse
+# =============================================================================
+#  dbt (data build tool) brings software development practices to SQL: each
+#  analytical table is a versioned, testable, documented .sql file, and dbt
+#  derives the execution order from them automatically.
+#
+#  What dbt does that plain SQL does not:
+#    - dependency resolution (`ref()`): no need to order things by hand
+#    - declarative quality tests on the columns
+#    - documentation and a lineage graph generated from the code
+#    - environment handling (dev / prod) without duplicating the SQL
+#
+#  How the roles split in this project:
+#    Python  cleans and loads the raw data   -> the `raw` layer
+#    dbt     models it for analysis          -> the `staging` + `analytics` layers
+# =============================================================================
+
+name: 'ecommerce_dbt'
+version: '1.0.0'
+config-version: 2
+
+# Connection profile, defined in profiles.yml
+profile: 'ecommerce_dbt'
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+seed-paths: ["seeds"]
+
+# `target` holds the compiled SQL and the run artefacts.
+# This folder is regenerated on every run: it is not versioned.
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  ecommerce_dbt:
+    # --- STAGING LAYER ---
+    #  Materialised as VIEWS: a view stores nothing, it only rephrases the
+    #  source table. That costs no disk space and is always up to date. Staging
+    #  only renames, types and derives simple fields - no business joins, no
+    #  aggregation.
+    staging:
+      +materialized: view
+      +schema: staging
+
+    # --- ANALYTICS LAYER ---
+    #  Materialised as TABLES: the computation happens once, during the run,
+    #  and the analysts query a result that is already there. That is the right
+    #  choice as soon as there are joins and aggregations: a view would
+    #  recompute them on every query.
+    marts:
+      +materialized: table
+      +schema: analytics

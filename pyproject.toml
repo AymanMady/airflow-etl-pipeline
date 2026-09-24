@@ -1,0 +1,28 @@
+# =============================================================================
+#  Python tooling configuration
+# =============================================================================
+#  pyproject.toml is the standard configuration file of the modern Python
+#  ecosystem (PEP 518/621). It replaces setup.cfg, .flake8 and pytest.ini.
+# =============================================================================
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"   # the Python version of the Airflow image
+src = ["src", "dags", "tests"]
+
+[tool.ruff.lint.isort]
+# `src` is the project package, not a third-party library.
+known-first-party = ["src"]
+
+[tool.ruff.lint]
+# E/W: PEP8       F: real errors (pyflakes)   I: import ordering
+# B  : bugbear    UP: modern syntax           N: naming conventions
+select = ["E", "W", "F", "I", "B", "UP", "N"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]        # makes `src.extract` importable from the tests
+addopts = "-v --strict-markers"
+markers = [
+    "integration: a test that needs a live PostgreSQL database",
+]

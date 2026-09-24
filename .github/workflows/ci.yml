@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: |
+          ruff check src/ dags/ scripts/ tests/
+          ruff format --check src/ dags/ scripts/ tests/
+
+      # The integration tests need a live PostgreSQL; they run in the next job.
+      - name: Unit tests
+        run: pytest -m "not integration"
+
+  pipeline:
+    name: End-to-end pipeline
+    runs-on: ubuntu-latest
+
+    # The real PostgreSQL the pipeline loads into. Mapped to 5435 to match the
+    # port the project uses everywhere else.
+    services:
+      postgres:
+        image: postgres:16.15-alpine
+        env:
+          POSTGRES_USER: ecommerce
+          POSTGRES_PASSWORD: ecommerce
+          POSTGRES_DB: ecommerce
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd "pg_isready -U ecommerce -d ecommerce"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5435
+      POSTGRES_DB: ecommerce
+      POSTGRES_USER: ecommerce
+      POSTGRES_PASSWORD: ecommerce
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # The service container skips docker-entrypoint-initdb.d, so the schemas
+      # are created here instead.
+      - name: Create the warehouse schemas
+        run: |
+          PGPASSWORD=ecommerce psql -h localhost -p 5435 -U ecommerce -d ecommerce \
+            -f docker/postgres/init/01_init_schemas.sql
+
+      - name: Generate the raw CSVs
+        run: python scripts/generate_data.py
+
+      # Runs extract -> transform -> load. A missing column, an unparsable date
+      # or a rejected row above the threshold fails the build here.
+      - name: Run the pipeline
+        run: python scripts/run_pipeline.py
+
+      # The load is an UPSERT on the primary key: a second run must update, not
+      # insert. This is the property the whole project is built around.
+      - name: Run it again and prove idempotency
+        run: |
+          BEFORE=$(PGPASSWORD=ecommerce psql -h localhost -p 5435 -U ecommerce -d ecommerce -tAc \
+            "SELECT count(*) FROM raw.orders")
+          python scripts/run_pipeline.py
+          AFTER=$(PGPASSWORD=ecommerce psql -h localhost -p 5435 -U ecommerce -d ecommerce -tAc \
+            "SELECT count(*) FROM raw.orders")
+          echo "orders before=$BEFORE after=$AFTER"
+          test "$BEFORE" = "$AFTER"
+
+      - name: Integration tests
+        run: pytest -m integration
+
+      - name: Upload the quarantined rows
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rejected-rows
+          path: data/processed/

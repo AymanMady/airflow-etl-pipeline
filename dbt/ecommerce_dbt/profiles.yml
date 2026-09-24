@@ -1,0 +1,25 @@
+# =============================================================================
+#  dbt connection profile
+# =============================================================================
+#  No password in plain text: everything comes from the environment through
+#  env_var(). The same variables feed the Python code - a single source of
+#  truth for the configuration.
+# =============================================================================
+
+ecommerce_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST') }}"
+      port: "{{ env_var('POSTGRES_PORT') | int }}"
+      user: "{{ env_var('POSTGRES_USER') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
+      dbname: "{{ env_var('POSTGRES_DB') }}"
+      # Default schema; each model folder overrides it
+      # (staging -> staging, marts -> analytics).
+      schema: analytics
+      # How many models are built in parallel. dbt always respects the
+      # dependency graph: only independent models run together.
+      threads: 4
+      connect_timeout: 10

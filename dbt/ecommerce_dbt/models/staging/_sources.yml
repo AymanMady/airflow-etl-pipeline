@@ -1,0 +1,60 @@
+# =============================================================================
+#  Source declarations
+# =============================================================================
+#  A "source" is a table dbt DOES NOT BUILD: it is filled by the Python
+#  pipeline. Declaring it here brings three things:
+#
+#    1. `{{ source('raw', 'orders') }}` replaces the hardcoded table name. If
+#       the schema ever changes, you edit this file, not the 12 models.
+#    2. Sources show up in the lineage graph: you see at a glance where each
+#       figure comes from.
+#    3. You can test the RAW data, before it is transformed at all.
+# =============================================================================
+
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      The warehouse's raw layer, filled by the Python pipeline
+      (src/load/load.py) on every run of the ecommerce_daily_etl DAG.
+    schema: raw
+
+    tables:
+      - name: customers
+        description: The shop's customers, one record per customer.
+        columns:
+          - name: customer_id
+            description: Unique customer identifier (primary key).
+            data_tests: [unique, not_null]
+          - name: email
+            description: >
+              Email normalised to lower case. NULL when the source address was
+              invalid - the customer is kept regardless.
+
+      - name: products
+        description: The product catalogue.
+        columns:
+          - name: product_id
+            description: Unique product identifier (primary key).
+            data_tests: [unique, not_null]
+          - name: price
+            description: Unit price in euros, always zero or positive.
+            data_tests: [not_null]
+
+      - name: orders
+        description: >
+          Orders. One row = one order for a single product.
+        columns:
+          - name: order_id
+            description: Unique order identifier (primary key).
+            data_tests: [unique, not_null]
+          - name: customer_id
+            description: The customer who placed the order.
+            data_tests: [not_null]
+          - name: product_id
+            description: The product ordered.
+            data_tests: [not_null]
+          - name: quantity
+            description: Quantity ordered, strictly positive.
+            data_tests: [not_null]

@@ -1,0 +1,73 @@
+# ============================ Secrets ============================
+.env
+.env.local
+*.pem
+*.key
+
+# ============================ Python =============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+.python-version
+
+# ---- Tests / quality ----
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ============================ Airflow ============================
+logs/*
+!logs/.gitkeep
+airflow.db
+airflow.cfg
+airflow-webserver.pid
+webserver_config.py
+standalone_admin_password.txt
+simple_auth_manager_passwords.json.generated
+plugins/__pycache__/
+
+# ============================== dbt ==============================
+dbt/**/target/
+dbt/**/dbt_packages/
+dbt/**/logs/
+.user.yml
+
+# ============================= Data ==============================
+# The generated data is not versioned: it is reproducible with `make seed`.
+# The folders are kept alive by their .gitkeep files.
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+*.parquet
+
+# ============================ Docker =============================
+docker-compose.override.yml
+
+# =========================== PostgreSQL ==========================
+*.dump
+*.sql.gz
+pgdata/
+
+# ============================== OS ===============================
+.DS_Store
+Thumbs.db
+
+# ============================== IDE ==============================
+.idea/
+.vscode/
+*.swp
+
+# Personal course notes, not part of the project
+LEARNING.md
