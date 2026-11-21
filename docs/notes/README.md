@@ -5,3 +5,4 @@ applying) in this project. Each note is self-contained.
 
 - [Idempotent loads](idempotent-loads.md) — running a load twice must not change the result
 - [Slowly changing dimensions (type 2)](scd-type-2.md) — keeping history of dimension attributes
+- [Testing data pipelines](testing-data-pipelines.md) — unit, integration and data tests
