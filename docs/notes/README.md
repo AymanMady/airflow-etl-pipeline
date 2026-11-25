@@ -10,3 +10,4 @@ applying) in this project. Each note is self-contained.
 - [Table grain](table-grain.md) — declare what one row means before writing any SQL
 - [Partitioning](partitioning.md) — choosing partition keys for lakes and warehouses
 - [dbt tests](dbt-tests.md) — generic, singular and unit tests and where to put them
+- [Medallion architecture](medallion-architecture.md) — bronze, silver and gold layers
