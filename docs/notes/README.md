@@ -8,3 +8,4 @@ applying) in this project. Each note is self-contained.
 - [Testing data pipelines](testing-data-pipelines.md) — unit, integration and data tests
 - [Late-arriving data](late-arriving-data.md) — event time, watermarks and corrections
 - [Table grain](table-grain.md) — declare what one row means before writing any SQL
+- [Partitioning](partitioning.md) — choosing partition keys for lakes and warehouses
