@@ -11,3 +11,4 @@ applying) in this project. Each note is self-contained.
 - [Partitioning](partitioning.md) — choosing partition keys for lakes and warehouses
 - [dbt tests](dbt-tests.md) — generic, singular and unit tests and where to put them
 - [Medallion architecture](medallion-architecture.md) — bronze, silver and gold layers
+- [Logging in pipelines](logging-in-pipelines.md) — logs that help at 3 a.m.
