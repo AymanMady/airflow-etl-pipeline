@@ -12,3 +12,4 @@ applying) in this project. Each note is self-contained.
 - [dbt tests](dbt-tests.md) — generic, singular and unit tests and where to put them
 - [Medallion architecture](medallion-architecture.md) — bronze, silver and gold layers
 - [Logging in pipelines](logging-in-pipelines.md) — logs that help at 3 a.m.
+- [Orchestration best practices](orchestration-best-practices.md) — designing DAGs that are easy to operate
