@@ -7,3 +7,4 @@ applying) in this project. Each note is self-contained.
 - [Slowly changing dimensions (type 2)](scd-type-2.md) — keeping history of dimension attributes
 - [Testing data pipelines](testing-data-pipelines.md) — unit, integration and data tests
 - [Late-arriving data](late-arriving-data.md) — event time, watermarks and corrections
+- [Table grain](table-grain.md) — declare what one row means before writing any SQL
